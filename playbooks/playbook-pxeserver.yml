@@ -1,0 +1,161 @@
+---
+- hosts: "pxeserver"
+  become: true
+  gather_facts: no
+  vars: 
+    to_iso: "pxeserver/iso/CentOS-8.4.2105-x86_64-dvd1.iso"
+
+  tasks: 
+
+#####################################################
+# Изменение репозитория, установка сервисов и утилит
+  - name: SET UP REPO
+    replace:
+      path: "{{ item }}"
+      regexp: 'mirrorlist'
+      replace: '#mirrorlist'
+    with_items:
+      - /etc/yum.repos.d/CentOS-Linux-AppStream.repo
+      - /etc/yum.repos.d/CentOS-Linux-BaseOS.repo
+
+  - name: SET UP REPO
+    replace:
+      path: "{{ item }}"
+      regexp: '#baseurl=http://mirror.centos.org'
+      replace: 'baseurl=http://vault.centos.org'
+    with_items:
+      - /etc/yum.repos.d/CentOS-Linux-AppStream.repo
+      - /etc/yum.repos.d/CentOS-Linux-BaseOS.repo
+
+  - name: INSTALL UTILITIES
+    yum:
+      name: 
+        - epel-release
+        - nginx
+        - wget
+        - mc
+        - tftp-server
+        - dhcp-server
+      state: present
+
+#####################################################
+# Настройка Nginx
+
+  - name: COPY site.lc.conf 
+    copy:
+      src: pxeserver/nginx/site.lc.conf
+      dest: /etc/nginx/conf.d/
+
+  - name: COPY nginx.conf 
+    copy:
+      src: pxeserver/nginx/nginx.conf
+      dest: /etc/nginx/
+
+  - name: START/ENABLE NGINX
+    service: 
+      name: nginx
+      state: started
+      enabled: yes
+
+#####################################################
+# Перенос и распаковка установочного iso-образа ОС на сервер
+
+  - name: CREATE /iso DIRECTORY
+    file:
+      path: /iso
+      state: directory
+      mode: '0755'
+
+  - name: COPY ISO IMAGE
+    copy:
+      src: '{{ to_iso }}'
+      dest: /tmp/
+      owner: root
+      mode: 'preserve'
+
+  - name: MOUNT ISO IMAGE
+    mount:
+      path: /mnt
+      src: /tmp/CentOS-8.4.2105-x86_64-dvd1.iso
+      fstype: iso9660
+      opts: ro,loop
+      state: mounted
+
+  - name: COPY ALL FILES FROM /mnt TO /iso
+    copy:
+      src: /mnt/
+      dest: /iso
+      remote_src: yes
+      directory_mode: yes
+
+  - name: COPY ks.conf
+    copy:
+      src: pxeserver/kickstart/ks.conf
+      dest: /iso/ks.conf
+      mode: 0755  
+
+#####################################################
+# Настройка tftp-сервера
+
+  - name: CREATE TFTP DIRECTORY
+    file:
+      path: /var/lib/tftpboot/pxelinux.cfg
+      state: directory
+      mode: '0755'
+
+  - name: COPY MENU FILE 
+    copy:
+      src: pxeserver/tftp/default
+      dest: /var/lib/tftpboot/pxelinux.cfg/default
+      owner: root
+      group: root
+      mode: 0644
+
+  - name: EXTRACT PACKAGES SYSLINUX
+    shell: rpm2cpio /iso/BaseOS/Packages/syslinux-tftpboot-6.04-5.el8.noarch.rpm | cpio -dimv
+
+  - name: COPY FILES TO TFTP SHARE
+    copy:
+      src: /home/vagrant/tftpboot/{{ item }}
+      dest: /var/lib/tftpboot/{{ item }}
+      mode: '0644'
+      remote_src: true
+    with_items:
+      - pxelinux.0
+      - ldlinux.c32
+      - libmenu.c32
+      - libutil.c32
+      - menu.c32
+      - vesamenu.c32  
+
+  - name: COPY initrd AND vmlinuz FILES TO TFTP SHARE
+    copy:
+      src: /iso/images/pxeboot/{{ item }}
+      dest: /var/lib/tftpboot/{{ item }}
+      mode: '0755'
+      remote_src: true
+    with_items:
+      - initrd.img
+      - vmlinuz
+
+  - name: START/ENABLE TFTP-SERVER
+    service:
+      name: tftp.service
+      state: restarted
+      enabled: true
+
+#####################################################
+# Настройка dhcp-сервера
+
+  - name: COPY dhcp.conf
+    copy:
+      src: pxeserver/dhcp/dhcpd.conf
+      dest: /etc/dhcp/dhcpd.conf
+      mode: 0644
+
+  - name: START/ENABLE DHCP-SERVER
+    service:
+      name: dhcpd
+      state: restarted
+      enabled: true
+
